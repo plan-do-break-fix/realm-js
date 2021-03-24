@@ -47,7 +47,7 @@ if (options.arch) {
 if (!"ANDROID_NDK" in process.env) {
     throw Error("ANDROID_NDK environment variable not set");
 }
-const ndkPath = process.env["ANDROID_NDK"];
+const ndkPath = process.env["ANDROID_NDK"] || process.env["ANDROID_NDK_HOME"];
 
 const sdkPath = getAndroidSdkPath();
 const cmakePath = getCmakePath(sdkPath);
@@ -149,6 +149,12 @@ function getAndroidSdkPath() {
         console.log("Using ANDROID_SDK env variable");
         return process.env["ANDROID_SDK"];
     }
+
+    if ("ANDROID_SDK_HOME" in process.env) {
+        console.log("Using ANDROID_SDK_HOME env variable");
+        return process.env["ANDROID_SDK_HOME"];
+    }
+
 
     if ("ANDROID_HOME" in process.env) {
         console.log("Using ANDROID_HOME env variable");
