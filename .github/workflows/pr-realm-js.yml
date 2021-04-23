@@ -4,8 +4,12 @@ on:
         branches:
             - github-actions-migration
 jobs:
-    build-darwin-prebuild:
-        runs-on: macos-latest
+    build-prebuild:
+        strategy:
+            fail-fast: true
+            matrix:
+                os: [ubuntu, macos, windows]
+        runs-on: ${{matrix.os}}-latest
         steps:
             # This will retrieve the realm-js github repository
             - name: Checkout code
@@ -16,6 +20,14 @@ jobs:
             # This sets node up, and can also pick the version if necessary
             - name: Setup node version
               uses: actions/setup-node@v1
+
+            - name: Setup Linux Environment
+              if: ${{matrix.os == 'ubuntu'}}
+              run: sudo apt install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+
+            - name: MSVC Setup
+              if: ${{matrix.os == 'windows'}}
+              uses: ilammy/msvc-dev-cmd@v1
 
             - name: Cache prebuild
               id: cache-prebuild
@@ -28,20 +40,32 @@ jobs:
                   restore-keys: |
                       ${{ runner.os }}-build-${{ env.cache-name }}
 
+            - name: Windows Environment setup
+              if: steps.cache-prebuild.outputs.cache-hit != 'true' && matrix.os == 'windows'
+              run: |
+                  Invoke-WebRequest -Uri https://static.realm.io/downloads/vcpkg.zip -OutFile C:\vcpkg.zip
+                  Expand-Archive -Path C:\vcpkg.zip -DestinationPath C:\
+              shell: powershell
+
             # Install node dependencies and build the c++ library
-            - name: Build darwin
-              if: steps.cache-prebuild.outputs.cache-hit != 'true'
+            - name: Build
+              if: ${{steps.cache-prebuild.outputs.cache-hit != 'true' && matrix.os != 'windows'}}
               run: |
                   npm run package
+
+            - name: Build
+              if: ${{steps.cache-prebuild.outputs.cache-hit != 'true' && matrix.os == 'windows'}}
+              run: |
+                  npm run package -- --arch=x64 
+                  npm run package -- --arch=ia32
 
             - name: Upload prebuild artifact
               uses: actions/upload-artifact@v2
               with:
-                  name: prebuild-macos
+                  name: prebuild-${{matrix.os}}
                   path: prebuilds
 
     build-macos-xcframework:
-        needs: build-darwin-prebuild
         runs-on: macos-latest
         steps:
             # This will retrieve the realm-js github repository
@@ -53,16 +77,6 @@ jobs:
             # This sets node up, and can also pick the version if necessary
             - name: Setup node version
               uses: actions/setup-node@v1
-
-            - name: Download prebuild artifact
-              uses: actions/download-artifact@v2
-              with:
-                  name: prebuild-macos
-                  path: prebuilds
-
-            - name: Install prebuild
-              run: |
-                  npm ci
 
             - name: Cache derived data
               id: cache-derirved-data
@@ -135,106 +149,9 @@ jobs:
                   name: android-artifact
                   path: react-native/android/src/main/jniLibs
 
-    build-linux-prebuild:
-        runs-on: ubuntu-latest
-        steps:
-            # This will retrieve the realm-js github repository
-            - name: Checkout code
-              uses: actions/checkout@v2
-              with:
-                  submodules: "recursive"
-
-            - name: Setup Environment
-              run: sudo apt install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
-
-            # This sets node up, and can also pick the version if necessary
-            - name: Setup node version
-              uses: actions/setup-node@v1
-
-            - name: Cache prebuild
-              id: cache-prebuild
-              uses: actions/cache@v2
-              env:
-                  cache-name: cache-prebuild-artifacts
-              with:
-                  path: prebuilds
-                  key: ${{ runner.os }}-build-${{ env.cache-name }}
-                  restore-keys: |
-                      ${{ runner.os }}-build-${{ env.cache-name }}
-
-            # Install node dependencies and build the c++ library
-            - name: Build Linux
-              if: steps.cache-prebuild.outputs.cache-hit != 'true'
-              run: |
-                  npm run package
-
-            - name: upload artifact
-              uses: actions/upload-artifact@v2
-              with:
-                  name: prebuild-linux
-                  path: prebuilds
-
-    build-windows-prebuild:
-        runs-on: windows-latest
-        steps:
-            - uses: ilammy/msvc-dev-cmd@v1
-
-            - name: echo some envs
-              run: |
-                  echo $OSTYPE
-
-            # This will retrieve the realm-js github repository
-            - name: Checkout code
-              uses: actions/checkout@v2
-              with:
-                  submodules: "recursive"
-
-            # This sets node up, and can also pick the version if necessary
-            - name: Setup node version
-              uses: actions/setup-node@v1
-
-            # As Windows works differently than linux, this is a trick to write
-            # the npm-cache directory path to a string.
-            - name: Get npm cache directory
-              id: npm-cache
-              run: |
-                  echo "::set-output name=dir::$(npm config get cache)"
-
-            - name: Cache prebuild
-              id: cache-prebuild
-              uses: actions/cache@v2
-              env:
-                  cache-name: cache-prebuild-artifacts
-              with:
-                  path: prebuilds
-                  key: ${{ runner.os }}-build-${{ env.cache-name }}
-                  restore-keys: |
-                      ${{ runner.os }}-build-${{ env.cache-name }}
-
-            - name: Environment setup
-              if: steps.cache-prebuild.outputs.cache-hit != 'true'
-              run: |
-                  Invoke-WebRequest -Uri https://static.realm.io/downloads/vcpkg.zip -OutFile C:\vcpkg.zip
-                  Expand-Archive -Path C:\vcpkg.zip -DestinationPath C:\
-              shell: powershell
-
-              #export PATH=/usr/local/opt/ccache/libexec:$PATH
-            # Install node dependencies and build the c++ library
-            - name: Build
-              if: steps.cache-prebuild.outputs.cache-hit != 'true'
-              run: |
-                  npm run package -- --arch=x64 
-                  npm run package -- --arch=ia32
-
-            - name: upload artifact
-              uses: actions/upload-artifact@v2
-              with:
-                  name: prebuild-windows
-                  path: prebuilds
-
     test-node-windows:
         runs-on: windows-latest
-        needs: build-windows-prebuild
+        needs: build-prebuild
         env:
             npm_config_target: 4
             npm_config_runtime: napi
@@ -268,13 +185,17 @@ jobs:
 
     test-electron-windows:
         runs-on: windows-latest
-        needs: build-windows-prebuild
+        needs: build-prebuild
         env:
             npm_config_target: 4
             npm_config_runtime: napi
             npm_config_realm_local_prebuilds: ${{github.workspace}}/prebuilds
             REALM_DISABLE_SYNC_TESTS: true
         steps:
+            # This will retrieve the realm-js github repository
+            - name: Checkout code
+              uses: actions/checkout@v2
+
             - name: Download prebuild artifact
               uses: actions/download-artifact@v2
               with:
@@ -299,7 +220,7 @@ jobs:
 
     test-node-macos:
         runs-on: macos-latest
-        needs: build-darwin-prebuild
+        needs: build-prebuild
         env:
             npm_config_target: 4
             npm_config_runtime: napi
@@ -393,7 +314,7 @@ jobs:
                   npm test -- --process=render
     test-electron-macos:
         runs-on: macos-latest
-        needs: build-darwin-prebuild
+        needs: build-prebuild
         env:
             npm_config_target: 4
             npm_config_runtime: napi
@@ -552,7 +473,7 @@ jobs:
                   bash ./scripts/ci-scripts/realm-example.sh
     test-node-linux:
         runs-on: ubuntu-latest
-        needs: build-linux-prebuild
+        needs: build-prebuild
         env:
             REALM_DISABLE_SYNC_TESTS: true
             npm_config_target: 4
@@ -568,7 +489,7 @@ jobs:
             - name: Download prebuild artifact
               uses: actions/download-artifact@v2
               with:
-                  name: prebuild-linux
+                  name: prebuild-ubuntu
                   path: prebuilds
 
             - name: Install project dependencies
@@ -594,6 +515,36 @@ jobs:
             - name: Run tests
               working-directory: ./tests
               run: npm test
+    test-electron-linux:
+        runs-on: ubuntu-latest
+        needs: build-prebuild
+        env:
+            REALM_DISABLE_SYNC_TESTS: true
+            npm_config_target: 4
+            npm_config_runtime: napi
+            npm_config_realm_local_prebuilds: ${{github.workspace}}/prebuilds
+        steps:
+            # This will retrieve the realm-js github repository
+            - name: Checkout code
+              uses: actions/checkout@v2
+              with:
+                  submodules: "recursive"
+
+            - name: Download prebuild artifact
+              uses: actions/download-artifact@v2
+              with:
+                  name: prebuild-ubuntu
+                  path: prebuilds
+
+            - name: Install project dependencies
+              run: |
+                  npm ci
+
+            # Install the node dependencies in the test folder
+            - name: Install test dependencies
+              working-directory: ./tests
+              run: |
+                  npm ci
 
             # This sets up the environment for electron tests.  In linux, electron requires a
             # connected display.  We fake this by giving it a headless environment using xvfb
